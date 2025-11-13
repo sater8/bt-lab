@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 from math import floor
 from tools.exchange_rules import bt_conform_market_order
+import backtrader as bt, pandas as pd
+from math import floor
 
 
 # === Indicadores auxiliares ===
@@ -63,28 +65,22 @@ def signal_pullback_ema20(df: pd.DataFrame,
 # === Estrategia Backtrader con control de riesgo real ===
 class Strategy(bt.Strategy):
     """
-    Estrategia B — Pullback sano a EMA20 (4H)
-    - Tamaño por riesgo (1%) + cap por orden 85% (buffer 15%).
-    - On-ramp: 5 primeras a 0.75% si lo quieres (param opcional).
-    - Salida: cierre < EMA50.
+    Estrategia B — Pullback a EMA20 (4H) — VERSIÓN LIMPIA
+    - Solo señales y sizing por riesgo. Nada de exchange/fees aquí.
+    - Salida provisional: cierre < EMA50.
     """
     params = dict(
-        risk_pct=0.01,
-        ex_rules=None,
-        symbol_name=None,
-        sl_pct=0.08,
-        max_alloc_pct=0.85,     # <-- antes 0.10
-        rsi_floor=45,
-        wick_ratio_min=0.75,
-        onramp_max=5,
-        onramp_risk_cap=0.0075
+        risk_pct=0.01, sl_pct=0.08, max_alloc_pct=0.85,
+        rsi_floor=45, wick_ratio_min=0.75,
+        onramp_max=5, onramp_risk_cap=0.0075
     )
 
     def __init__(self):
         self.data_close = self.datas[0].close
         self.trade_log = []
         self.ema50 = bt.ind.EMA(self.data_close, period=50)
-        self.entry_price = None
+        self.entry_price = 0.0
+        self.entry_qty = 0.0
         self.signals = None
         self.trades_count = 0
 
@@ -97,14 +93,12 @@ class Strategy(bt.Strategy):
             "volume": self.data.volume.array
         })
         self.signals = signal_pullback_ema20(
-            df,
-            rsi_floor=self.params.rsi_floor,
-            wick_ratio_min=self.params.wick_ratio_min
+            df, rsi_floor=self.params.rsi_floor, wick_ratio_min=self.params.wick_ratio_min
         )
 
     def next(self):
         date = self.data.datetime.datetime(0)
-        close = self.data_close[0]
+        close = float(self.data_close[0])
         idx = len(self) - 1
         if self.signals is None or idx >= len(self.signals):
             return
@@ -112,56 +106,43 @@ class Strategy(bt.Strategy):
         signal_now = bool(self.signals.iloc[idx])
 
         if not self.position and signal_now:
-            account_eur = self.broker.getvalue()
-            cash = self.broker.get_cash()
+            account_eur = float(self.broker.getvalue())
+            cash = float(self.broker.get_cash())
 
-            base_risk = self.params.risk_pct
-            risk_pct_eff = min(base_risk, self.params.onramp_risk_cap) if self.trades_count < self.params.onramp_max else base_risk
-            qty_by_risk = (account_eur * risk_pct_eff) / (close * self.params.sl_pct)
-            qty_by_alloc = (account_eur * self.params.max_alloc_pct) / close
+            base_risk = float(self.params.risk_pct)
+            risk_eff = min(base_risk, float(self.params.onramp_risk_cap)) if self.trades_count < int(self.params.onramp_max) else base_risk
 
-            qty = floor(min(qty_by_risk, qty_by_alloc) * 1000) / 1000
-            if qty <= 0:
+            qty_by_risk  = (account_eur * risk_eff) / (close * float(self.params.sl_pct))
+            qty = floor(qty_by_risk * 1000) / 1000.0
+            if qty <= 0 or qty * close > cash:
                 return
-
-            fee = self.broker.getcommissioninfo(self.data).p.commission
-            cost = qty * close * (1 + fee)
-            if cost > cash:
-                return
-            
-            cap_new = self.broker.getvalue() * self.params.max_alloc_pct
-            ok, qty_adj, notional_adj, reason = bt_conform_market_order(
-                rules = (self.params.ex_rules or {}).get(self.params.symbol_name, {}),
-                side = "buy", ref_price = close, qty = qty, cap_notional = cap_new
-            )
-            if not ok or qty_adj <= 0:
-                self.trade_log.append({
-                    "Fecha entrada": date, "Tipo": "SKIP",
-                    "Motivo": f"exchange_rules: {reason}", "Cap orden (€)": round(cap_new,2)
-                })
-                return
-
-            qty = qty_adj
-
 
             self.buy(size=qty)
             self.entry_price = close
+            self.entry_qty = qty
             self.trades_count += 1
+
             self.trade_log.append({
                 "Fecha entrada": date, "Tipo": "BUY",
-                "Precio entrada": close, "Tamaño": qty
+                "Precio entrada": close, "Tamaño": qty,
+                "Riesgo (%)": round(risk_eff*100, 2),
+                "Saldo antes (€)": round(account_eur, 2),
+                "Notional entrada (€)": round(qty*close, 2)
             })
 
-        elif self.position and close < self.ema50[0]:
+        elif self.position and close < float(self.ema50[0]):
+            qty_open = float(self.position.size) if hasattr(self.position, "size") else self.entry_qty
             self.close()
-            qty = float(self.position.size) if hasattr(self.position, "size") else 0.0
-            profit_eur = (close - self.entry_price) * qty   # FIX
-            profit_pct = (close - self.entry_price) / self.entry_price * 100
+            profit_eur_bruto = (close - self.entry_price) * qty_open
+            profit_pct = (close - self.entry_price) / self.entry_price * 100.0
+
             self.trade_log.append({
                 "Fecha salida": date, "Tipo": "SELL",
                 "Precio salida": close,
                 "Beneficio (%)": round(profit_pct, 2),
-                "Beneficio (€)": round(profit_eur, 2),
-                "Saldo después (€)": round(self.broker.getvalue(), 2)
+                "PnL bruto (€)": round(profit_eur_bruto, 2),
+                "Saldo después (€)": round(float(self.broker.getvalue()), 2)
             })
-            self.entry_price = None
+
+            self.entry_price = 0.0
+            self.entry_qty = 0.0
