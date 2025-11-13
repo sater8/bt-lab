@@ -1,0 +1,20 @@
+# Entorno virtual
+venv/
+.venv/
+
+# Cache de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Datos pesados
+data/
+data_4h/
+*.csv
+
+# Resultados de backtests
+results/
+
+# Config de VSCode
+.vscode/

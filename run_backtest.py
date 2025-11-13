@@ -12,6 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
 from tools.exchange_rules import ensure_exchange_rules
 from tools.fees import default_fees_cfg, buyhold_fees
 from tools.exec_middleware import enable_exec_middleware, FeesNetAnalyzer
+from tools.slippage import default_slippage_cfg, default_latency_cfg
 
 
 # ------------------------------------------------------
@@ -71,15 +72,20 @@ SAT_MAP = {
 def run_backtest(
     data_path, strategy_path, capital, commission,
     symbol, strategy_name, pass_params=None,
-    ex_rules=None, fees_cfg=None
+    ex_rules=None, fees_cfg=None, slip_cfg=None, lat_cfg=None
 ):
+
+    # === CEREBRO ===
+    cerebro = bt.Cerebro()
+    cerebro.broker.setcash(capital)
+    cerebro.broker.setcommission(commission=0.0)
 
     # === DATA FEED ===
     data = bt.feeds.GenericCSVData(
         dataname=data_path,
         dtformat="%Y-%m-%d %H:%M:%S",
         timeframe=bt.TimeFrame.Minutes,
-        compression=240,
+        compression=240,  # 4H
         headers=True,
         datetime=0,
         open=1,
@@ -90,28 +96,31 @@ def run_backtest(
         openinterest=-1,
     )
 
-    cerebro = bt.Cerebro()
-    cerebro.broker.setcash(capital)
-    cerebro.broker.setcommission(commission=0.0)  # fees las aplica el middleware
+    cerebro.adddata(data, name=symbol)
 
-    # === ESTRATEGIA ===
+    # === MIDDLEWARE GLOBAL (UNA VEZ, AQUÍ) ===
+    enable_exec_middleware(
+        cerebro,
+        ex_rules=ex_rules,
+        fees_cfg=fees_cfg,
+        max_alloc_pct=0.85,
+        slip_cfg=slip_cfg,
+        lat_cfg=lat_cfg
+    )
+
+    # === ESTRATEGÍA ===
     strategy_module = load_strategy(strategy_path)
     if not hasattr(strategy_module, "Strategy"):
         raise AttributeError("Tu archivo de estrategia debe tener una clase llamada 'Strategy'")
 
     pass_params = pass_params or {}
-    try:
-        cerebro.addstrategy(strategy_module.Strategy, **pass_params)
-    except TypeError:
-        cerebro.addstrategy(strategy_module.Strategy)
+    StrategyClass = strategy_module.Strategy
+    cerebro.addstrategy(StrategyClass, **pass_params)
 
-    cerebro.adddata(data, name=symbol)
+    # === ANALYZER NETO ===
+    cerebro.addanalyzer(FeesNetAnalyzer, fees_cfg=fees_cfg, _name="feesnet")
 
     print(f"💰 Starting Portfolio Value: {cerebro.broker.getvalue():.2f}")
-
-    # === ACTIVAR MIDDLEWARE + ANALYZER ===
-    enable_exec_middleware(cerebro, ex_rules=ex_rules, fees_cfg=fees_cfg, max_alloc_pct=0.85)
-    cerebro.addanalyzer(FeesNetAnalyzer, fees_cfg=fees_cfg, _name="feesnet")
 
     # === RUN ===
     results = cerebro.run()
@@ -170,6 +179,7 @@ def run_backtest(
         print("⚠️ No se pudo mostrar el gráfico.")
 
 
+
 # ------------------------------------------------------
 # MAIN
 # ------------------------------------------------------
@@ -185,10 +195,12 @@ def main():
 
     # 1) Lista de símbolos
     symbols = [s.strip().upper() for s in args.symbols.split(",")]
-    fees_cfg = default_fees_cfg()
 
-    # 2) Reglas del exchange
+    # === BLOQUE PASO 3.2: CONFIGURACIÓN GLOBAL ===
     ex_rules = ensure_exchange_rules(symbols)
+    fees_cfg = default_fees_cfg()
+    slip_cfg = default_slippage_cfg()
+    lat_cfg  = default_latency_cfg()
 
     strategy_name = args.strategy
     data_dir = "data"
@@ -243,7 +255,9 @@ def main():
             args.commission, symbol, strategy_name,
             pass_params=pass_params_sym,
             ex_rules=ex_rules,
-            fees_cfg=fees_cfg
+            fees_cfg=fees_cfg,
+            slip_cfg=slip_cfg,
+            lat_cfg=lat_cfg
         )
 
 
