@@ -63,6 +63,7 @@ def load_strategy(strategy_path: str):
 SAT_MAP = {
     "ruptura_retest": 0.45,
     "pullback_ema20": 0.40,
+        "traffic_light": 0.40,   # o el porcentaje que quieras para su satélite
 }
 
 
