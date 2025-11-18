@@ -18,3 +18,6 @@ results/
 
 # Config de VSCode
 .vscode/
+
+# movimientos del bot creo
+state_bol_breakout.json

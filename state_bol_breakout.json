@@ -1,0 +1,17 @@
+{
+  "BTCUSDT": {
+    "position": "FLAT",
+    "stop_price": null,
+    "last_open_ms": 1763438400000
+  },
+  "ADAUSDT": {
+    "position": "FLAT",
+    "stop_price": null,
+    "last_open_ms": 1763438400000
+  },
+  "XRPUSDT": {
+    "position": "FLAT",
+    "stop_price": null,
+    "last_open_ms": 1763438400000
+  }
+}
