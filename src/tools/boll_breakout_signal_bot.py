@@ -178,11 +178,11 @@ def evaluate_boll_breakout(df, state):
             stop_price = close - 2.0 * atr14
 
             msg = (
-                f"🟢 **BOL BREAKOUT – ENTRY LONG**\n"
-                f"Precio: `{close:.4f}`\n"
-                f"Stop dinámico inicial: `{stop_price:.4f}`\n"
+                f"🟢 **ENTRADA LONG**\n"
+                f"Precio entrada: `{close:.4f}`\n"
                 f"BB width: `{bb_width:.4f}`"
             )
+
 
             state["position"] = "LONG"
             state["stop_price"] = float(stop_price)
@@ -199,9 +199,11 @@ def evaluate_boll_breakout(df, state):
         # 2) Weakness exit: close < EMA20
         if close < ema20:
             msg = (
-                f"🔴 **BOL BREAKOUT – WEAK EXIT**\n"
-                f"Cierre: `{close:.4f}` < EMA20 `{ema20:.4f}`"
+                f"🔴 **SALIDA (WEAK EXIT)**\n"
+                f"Cierre: `{close:.4f}`\n"
+                f"EMA20: `{ema20:.4f}`"
             )
+
             state["position"] = "FLAT"
             state["stop_price"] = None
             state["last_open_ms"] = last_open_ms
