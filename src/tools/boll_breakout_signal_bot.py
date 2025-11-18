@@ -195,16 +195,6 @@ def evaluate_boll_breakout(df, state):
     # --------------------------------------------------
     else:  # LONG
 
-        # 1) STOP dinámico ATR
-        if close <= state["stop_price"]:
-            msg = (
-                f"🔴 **BOL BREAKOUT – STOP LOSS**\n"
-                f"Cierre: `{close:.4f}` <= stop `{state['stop_price']:.4f}`"
-            )
-            state["position"] = "FLAT"
-            state["stop_price"] = None
-            state["last_open_ms"] = last_open_ms
-            return state, msg
 
         # 2) Weakness exit: close < EMA20
         if close < ema20:
