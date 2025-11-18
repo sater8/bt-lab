@@ -136,7 +136,8 @@ def run_backtest(
         print(f"🧾 Log NETO guardado en: {out}")
 
     # === FINAL VALUE ===
-    print(f"🏁 Final Portfolio Value: {cerebro.broker.getvalue():.2f}")
+    final_strategy_value = cerebro.broker.getvalue()
+    print(f"🏁 Final Portfolio Value: {final_strategy_value:.2f}")
 
     # === BUY & HOLD ===
     try:
@@ -158,20 +159,35 @@ def run_backtest(
             f"({bh_pct_net:+.2f}%)  [fees={bh_fee_total:.2f}]"
         )
 
-        # --- NUEVO: Portfolio combinado HOLD + Estrategia ---
-        capital_trading = 400  # capital destinado a la estrategia
-        capital_hold = capital - capital_trading
+        # === PORTFOLIO COMBINADO ===
+        capital_trading = 400              # parte destinada a la estrategia
+        capital_hold = capital - 400       # parte destinada al hold
 
-        # multiplicador del hold (sin comisiones)
+        # valor final del hold
         hold_multiplier = bh_last / bh_first
         final_hold_value = capital_hold * hold_multiplier
 
-        final_combined = final_hold_value + cerebro.broker.getvalue()
+        # portfolio combinado sin desviaciones
+        final_combined = final_hold_value + final_strategy_value
 
         print(
             f"📦 Portfolio combinado (Hold {capital_hold:.0f} + Estrategia {capital_trading}): "
             f"{final_combined:.2f}"
         )
+
+        # === DESVIACIONES APLICADAS SOLO A LA PARTE ESTRATEGIA ===
+
+        dev15_strategy = final_strategy_value * 0.85
+        dev25_strategy = final_strategy_value * 0.75
+        dev35_strategy = final_strategy_value * 0.65
+
+        portfolio_dev15 = final_hold_value + dev15_strategy
+        portfolio_dev25 = final_hold_value + dev25_strategy
+        portfolio_dev35 = final_hold_value + dev35_strategy
+
+        print(f"📉 Portfolio combinado con desviación 15%: {portfolio_dev15:.2f}")
+        print(f"📉 Portfolio combinado con desviación 25%: {portfolio_dev25:.2f}")
+        print(f"📉 Portfolio combinado con desviación 35%: {portfolio_dev35:.2f}")
 
     except Exception as e:
         print(f"⚠️ No se pudo calcular Buy&Hold: {e}")
@@ -193,6 +209,7 @@ def run_backtest(
         cerebro.plot(style="candlestick")
     except Exception:
         print("⚠️ No se pudo mostrar el gráfico.")
+
 
 
 
