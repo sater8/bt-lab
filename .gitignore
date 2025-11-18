@@ -8,10 +8,7 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Datos pesados
-data/
-data_4h/
-*.csv
+
 
 # Resultados de backtests
 results/
