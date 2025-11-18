@@ -158,6 +158,21 @@ def run_backtest(
             f"({bh_pct_net:+.2f}%)  [fees={bh_fee_total:.2f}]"
         )
 
+        # --- NUEVO: Portfolio combinado HOLD + Estrategia ---
+        capital_trading = 400  # capital destinado a la estrategia
+        capital_hold = capital - capital_trading
+
+        # multiplicador del hold (sin comisiones)
+        hold_multiplier = bh_last / bh_first
+        final_hold_value = capital_hold * hold_multiplier
+
+        final_combined = final_hold_value + cerebro.broker.getvalue()
+
+        print(
+            f"📦 Portfolio combinado (Hold {capital_hold:.0f} + Estrategia {capital_trading}): "
+            f"{final_combined:.2f}"
+        )
+
     except Exception as e:
         print(f"⚠️ No se pudo calcular Buy&Hold: {e}")
 
