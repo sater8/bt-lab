@@ -55,21 +55,43 @@ def _save_cache(cache: Dict[str, Any]):
         json.dump(cache, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 def ensure_exchange_rules(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-    """
-    Descarga (si hace falta) y cachea exchangeInfo. Devuelve filtros parseados.
-    """
     cache = _load_cache()
-    need = [s for s in symbols if s not in cache]
+
+    EXTERNAL_SYMBOLS = ["XAUUSD", "XAGUSD", "GOLD", "OIL", "SP500"]
+    need = [s for s in symbols if s not in cache and s not in EXTERNAL_SYMBOLS]
+
     if need:
         fetched = _fetch_exchange_info(need)
         cache.update(fetched)
         _save_cache(cache)
+
     parsed = {}
     for s in symbols:
-        if s not in cache:
-            continue
-        parsed[s] = _parse_symbol_filters(cache[s])
+        if s in cache:
+            parsed[s] = _parse_symbol_filters(cache[s])
+
+    # >>> NUEVO BLOQUE PARA REGLAS GENÉRICAS <<<
+    for s in symbols:
+        if s not in parsed:   # símbolo externo (oro, índices…)
+            parsed[s] = {
+                "symbol": s,
+                "base": s,
+                "quote": "USD",
+                "minPrice": Decimal("0"),
+                "maxPrice": Decimal("9999999"),
+                "tickSize": Decimal("0.01"),
+                "minQty": Decimal("0.0001"),
+                "maxQty": Decimal("9999999"),
+                "stepSize": Decimal("0.01"),
+                "minQtyMkt": Decimal("0.0001"),
+                "maxQtyMkt": Decimal("9999999"),
+                "stepSizeMkt": Decimal("0.01"),
+                "minNotional": Decimal("0"),
+                "applyToMarket": True,
+            }
+
     return parsed
+
 
 def _get_filter(sym: Dict[str, Any], t: str) -> Optional[Dict[str, str]]:
     for f in sym.get("filters", []):
