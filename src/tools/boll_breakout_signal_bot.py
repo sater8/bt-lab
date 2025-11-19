@@ -26,7 +26,7 @@ STATE_PATH = "state_bol_breakout.json"
 BINANCE = "https://api.binance.com"
 
 # Webhook (configúralo en variable de entorno SIEMPRE)
-DISCORD_WEBHOOK_URL = os.getenv("https://discordapp.com/api/webhooks/1440298281296068649/ZvnrO6MfJHtIM48oMRLC25CHvERBN7AmVA9VeidE5OSazuF4TSaWxleF0ZreypFUCHS-")
+DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1440298281296068649/ZvnrO6MfJHtIM48oMRLC25CHvERBN7AmVA9VeidE5OSazuF4TSaWxleF0ZreypFUCHS-"
 
 
 # ------------------------------------------------------
@@ -227,6 +227,7 @@ def run_bot(symbols, sleep=60):
             state[sym] = dict(position="FLAT", stop_price=None, last_open_ms=0)
 
     print(f"🚀 Bol Breakout live bot iniciado ({symbols})")
+    send_discord(f"🤖 **Bot iniciado correctamente**\nMonedas: `{symbols}`")
 
     while True:
         for sym in symbols:
