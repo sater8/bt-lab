@@ -99,15 +99,19 @@ def run_backtest(
 
     cerebro.adddata(data, name=symbol)
 
-    # === MIDDLEWARE GLOBAL (UNA VEZ, AQUÍ) ===
-    enable_exec_middleware(
-        cerebro,
-        ex_rules=ex_rules,
-        fees_cfg=fees_cfg,
-        max_alloc_pct=0.85,
-        slip_cfg=slip_cfg,
-        lat_cfg=lat_cfg
-    )
+    # === MIDDLEWARE GLOBAL (DESACTIVADO PARA boll_breakout_real) ===
+    if strategy_name != "boll_breakout_real":
+        enable_exec_middleware(
+            cerebro,
+            ex_rules=ex_rules,
+            fees_cfg=fees_cfg,
+            max_alloc_pct=0.85,
+            slip_cfg=slip_cfg,
+            lat_cfg=lat_cfg
+        )
+    else:
+        print("⚠️ Middleware DESACTIVADO para boll_breakout_real (simula el signal bot).")
+
 
     # === ESTRATEGÍA ===
     strategy_module = load_strategy(strategy_path)
