@@ -4,15 +4,6 @@ Bollinger Breakout (bt-lab version) – Real-Time Discord Bot
 -----------------------------------------------------------
 Replica EXACTAMENTE la estrategia de:
     strategies/bol_breakout.py
-
-- Descarga velas H4 de Binance
-- Detecta squeeze
-- Detecta breakout con vela válida (body ratio >= 0.5)
-- Comprueba volumen
-- Aplica filtro de tendencia
-- Calcula ATR14 para stop dinámico
-- Gestiona estado LONG/FLAT por símbolo
-- Envía señales al canal de Discord vía webhook
 """
 
 import os
@@ -28,13 +19,19 @@ BINANCE = "https://api.binance.com"
 # Webhook (configúralo en variable de entorno SIEMPRE)
 DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1440298281296068649/ZvnrO6MfJHtIM48oMRLC25CHvERBN7AmVA9VeidE5OSazuF4TSaWxleF0ZreypFUCHS-"
 
+# Parámetros idénticos a la estrategia real
+RISK_PCT = 0.01      # 1% de riesgo
+ATR_MULT = 2.0       # stop = close - 2*ATR
+
+HEARTBEAT_FILE = "bot_heartbeat.txt"
+
+
 
 # ------------------------------------------------------
 # UTILIDADES BÁSICAS
 # ------------------------------------------------------
 
 def fetch_klines(symbol, interval="4h", limit=300):
-    """Devuelve velas de Binance."""
     url = f"{BINANCE}/api/v3/klines"
     params = dict(symbol=symbol, interval=interval, limit=limit)
     r = requests.get(url, params=params, timeout=10)
@@ -79,7 +76,7 @@ def save_state(state):
 
 
 # ------------------------------------------------------
-# INDICADORES idénticos a tu estrategia Backtrader
+# INDICADORES
 # ------------------------------------------------------
 
 def ema(series, period):
@@ -108,7 +105,7 @@ def bollinger(df, period=20, dev=2.0):
 
 
 # ------------------------------------------------------
-# LÓGICA DE VELA BREAKOUT (exacta a tu backtester)
+# LÓGICA BREAKOUT
 # ------------------------------------------------------
 
 def is_breakout_candle(row):
@@ -120,8 +117,7 @@ def is_breakout_candle(row):
     body = abs(c - o)
     range_ = max(h - l, 1e-8)
 
-    body_ratio = body / range_
-    return (body_ratio >= 0.5) and (c > o)
+    return (body / range_ >= 0.5) and (c > o)
 
 
 # ------------------------------------------------------
@@ -129,32 +125,19 @@ def is_breakout_candle(row):
 # ------------------------------------------------------
 
 def evaluate_boll_breakout(df, state):
-    """
-    df → dataframe con velas (pandas)
-    state → dict con:
-        position: "FLAT" o "LONG"
-        stop_price: float | None
-        last_open_ms: int
-    
-    Devuelve estado actualizado + señales (string o None)
-    """
 
-    # Usamos la *última vela cerrada* = penúltima
-    last = df.iloc[-2]
+    last = df.iloc[-2]   # última vela cerrada
     prev = df.iloc[-3]
 
     last_open_ms = int(last["open_time"].timestamp() * 1000)
 
-    # Si ya procesamos esta vela → nada
     if last_open_ms == state["last_open_ms"]:
         return state, None
 
-    # --- Indicadores necesarios ---
     ema20 = df["ema20"].iloc[-2]
     ema50 = df["ema50"].iloc[-2]
 
     atr14 = df["atr14"].iloc[-2]
-    bb_mid = df["bb_mid"].iloc[-2]
     bb_top = df["bb_top"].iloc[-2]
     bb_bot = df["bb_bot"].iloc[-2]
     vol = last["volume"]
@@ -164,39 +147,40 @@ def evaluate_boll_breakout(df, state):
     bb_width = (bb_top - bb_bot) / (close + 1e-8)
 
     # --------------------------------------------------
-    #     SIN POSICIÓN → ENTRADA
+    # ENTRADA
     # --------------------------------------------------
     if state["position"] == "FLAT":
 
-        cond_squeeze = (bb_width <= 0.12)
-        cond_breakout = (close > bb_top) and is_breakout_candle(last)
-        cond_vol = (vol > vol_ma)
-        cond_trend = (ema20 > ema50)
+        cond_squeeze = bb_width <= 0.12
+        cond_breakout = close > bb_top and is_breakout_candle(last)
+        cond_vol = vol > vol_ma
+        cond_trend = ema20 > ema50
 
         if cond_squeeze and cond_breakout and cond_vol and cond_trend:
-            # Stop dinámico exactamente igual:
-            stop_price = close - 2.0 * atr14
+
+            # stop idéntico a backtester
+            stop_price = close - ATR_MULT * atr14
+
+            # ---- % UNIVERSAL DE INVERSIÓN ----
+            invest_pct = (RISK_PCT * close / (ATR_MULT * atr14)) * 100
 
             msg = (
                 f"🟢 **ENTRADA LONG**\n"
                 f"Precio entrada: `{close:.4f}`\n"
-                f"BB width: `{bb_width:.4f}`"
+                f"BB width: `{bb_width:.4f}`\n"
+                f"📈 Inversión aprox: `{invest_pct:.2f}%` de tu capital"
             )
-
 
             state["position"] = "LONG"
             state["stop_price"] = float(stop_price)
             state["last_open_ms"] = last_open_ms
-
             return state, msg
 
     # --------------------------------------------------
-    #     CON POSICIÓN → SALIDA
+    # SALIDA
     # --------------------------------------------------
     else:  # LONG
 
-
-        # 2) Weakness exit: close < EMA20
         if close < ema20:
             msg = (
                 f"🔴 **SALIDA (WEAK EXIT)**\n"
@@ -209,7 +193,6 @@ def evaluate_boll_breakout(df, state):
             state["last_open_ms"] = last_open_ms
             return state, msg
 
-    # Sin señales:
     state["last_open_ms"] = last_open_ms
     return state, None
 
@@ -228,6 +211,10 @@ def run_bot(symbols, sleep=60):
 
     print(f"🚀 Bol Breakout live bot iniciado ({symbols})")
     send_discord(f"🤖 **Bot iniciado correctamente**\nMonedas: `{symbols}`")
+
+    # --- HEARTBEAT terminal (cada 4 horas) ---
+    last_hb_print = time.time()
+    HEARTBEAT_PRINT_INTERVAL = 4 * 60 * 60  # 4 horas
 
     while True:
         for sym in symbols:
@@ -255,7 +242,24 @@ def run_bot(symbols, sleep=60):
                 print(f"[ERROR {sym}] {e}")
 
         save_state(state)
+
+        # --- Escribimos heartbeat a archivo (último latido en timestamp) ---
+        try:
+            with open(HEARTBEAT_FILE, "w") as f:
+                f.write(str(time.time()))
+        except Exception as e:
+            print(f"[ERROR HEARTBEAT FILE] {e}")
+
+        # --- Heartbeat en terminal cada 4h ---
+        now = time.time()
+        if now - last_hb_print >= HEARTBEAT_PRINT_INTERVAL:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            print(f"[HEARTBEAT] El bot sigue funcionando – {ts}")
+            last_hb_print = now
+
         time.sleep(sleep)
+
+
 
 
 # ------------------------------------------------------

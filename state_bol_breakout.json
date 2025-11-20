@@ -2,26 +2,26 @@
   "BTCUSDT": {
     "position": "FLAT",
     "stop_price": null,
-    "last_open_ms": 1763524800000
+    "last_open_ms": 1763640000000
   },
   "ADAUSDT": {
     "position": "FLAT",
     "stop_price": null,
-    "last_open_ms": 1763524800000
+    "last_open_ms": 1763640000000
   },
   "XRPUSDT": {
     "position": "FLAT",
     "stop_price": null,
-    "last_open_ms": 1763524800000
+    "last_open_ms": 1763640000000
   },
   "ETHUSDT": {
     "position": "FLAT",
     "stop_price": null,
-    "last_open_ms": 1763524800000
+    "last_open_ms": 1763640000000
   },
   "TRXUSDT": {
     "position": "FLAT",
     "stop_price": null,
-    "last_open_ms": 1763524800000
+    "last_open_ms": 1763640000000
   }
 }
