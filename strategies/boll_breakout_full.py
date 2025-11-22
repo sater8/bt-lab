@@ -3,9 +3,9 @@ import backtrader as bt
 
 class Strategy(bt.Strategy):
     params = dict(
-        # --- Parámetros de la estrategia (idénticos al bot) ---
-        risk_pct=0.01,        # 1% del equity en riesgo teórico
-        atr_mult=2.0,         # stop teórico = close - 2*ATR
+        # --- Parámetros de la estrategia ---
+        risk_pct=0.01,        # 1% del equity en riesgo por operación
+        atr_mult=2.0,         # stop = close - 2*ATR
         bb_period=20,
         bb_dev=2.0,
         squeeze_threshold=0.12,  # banda superior - inferior / close
@@ -13,7 +13,7 @@ class Strategy(bt.Strategy):
         trend_filter=True,    # require EMA20 > EMA50
         body_ratio_min=0.5,   # vela breakout debe tener cuerpo >= 50% del rango
 
-        # --- Necesarios para bt-lab (aunque aquí no los usemos explícitamente) ---
+        # --- Necesarios para bt-lab ---
         max_alloc_pct=None,
         onramp_max=None,
         onramp_risk_cap=None,
@@ -24,7 +24,7 @@ class Strategy(bt.Strategy):
         self.ema20 = bt.ind.EMA(self.data.close, period=20)
         self.ema50 = bt.ind.EMA(self.data.close, period=50)
 
-        # ATR (para sizing e invest_pct, igual que el bot)
+        # ATR
         self.atr = bt.ind.ATR(self.data, period=14)
 
         # Bollinger Bands
@@ -40,10 +40,10 @@ class Strategy(bt.Strategy):
 
         # Para guardar logs compatibles con bt-lab
         self.trade_log = []
-        self.stop_price = None  # solo informativo, como en el bot
+        self.stop_price = None
 
     def is_breakout_candle(self):
-        """Misma lógica que is_breakout_candle(row) del bot."""
+        """Detecta si la vela actual es breakout con cuerpo grande."""
         o = float(self.data.open[0])
         c = float(self.data.close[0])
         h = float(self.data.high[0])
@@ -78,23 +78,27 @@ class Strategy(bt.Strategy):
 
             if cond_squeeze and cond_breakout and cond_vol and cond_trend:
                 equity = float(self.broker.getvalue())
-
-                # Igual que el bot: riesgo teórico = 1% del equity
                 risk_amount = equity * self.p.risk_pct
                 risk_per_unit = self.p.atr_mult * atr
-
-                if risk_per_unit <= 0:
-                    return
-
                 size = risk_amount / risk_per_unit
+
                 if size <= 0:
                     return
 
-                # stop "teórico", como en el bot (pero NO lo usamos para salir)
-                self.stop_price = close - self.p.atr_mult * atr
+                # ============================================
+                # AJUSTE UNIVERSAL DE SIZE PARA EVITAR EXCEDER CAP
+                # ============================================
 
-                # invest_pct igual que en el bot (solo informativo)
-                invest_pct = (self.p.risk_pct * close / (self.p.atr_mult * atr)) * 100.0
+                price = close
+                max_trade_value = equity * 0.15   # 15% del capital por operación
+                max_size = max_trade_value / price
+                size = min(size, max_size)
+
+                if size <= 0:
+                    return
+
+                # stop dinámico
+                self.stop_price = close - self.p.atr_mult * atr
 
                 self.buy(size=size)
 
@@ -107,9 +111,6 @@ class Strategy(bt.Strategy):
                     "bb_width": bb_w,
                     "volume": float(self.data.volume[0]),
                     "vol_ma": float(self.vol_ma[0]),
-                    "equity": equity,
-                    "invest_pct": invest_pct,
-                    "stop_price_theoretical": self.stop_price,
                 })
                 return
 
@@ -117,16 +118,24 @@ class Strategy(bt.Strategy):
         #    CON POSICIÓN → SALIDA
         # ==========================
         else:
-            # 👇 MUY IMPORTANTE:
-            # El bot SOLO sale cuando el cierre cae por debajo de EMA20.
-            # No usa nunca el stop ATR en su lógica real.
+            # STOP ATR
+            if self.stop_price and close <= self.stop_price:
+                self.close()
+                self.trade_log.append({
+                    "dt": self.data.datetime.datetime(),
+                    "type": "STOP",
+                    "price": close,
+                })
+                self.stop_price = None
+                return
+
+            # Salida por debilidad: cierre bajo EMA20
             if close < float(self.ema20[0]):
                 self.close()
                 self.trade_log.append({
                     "dt": self.data.datetime.datetime(),
                     "type": "EXIT",
                     "price": close,
-                    "ema20": float(self.ema20[0]),
                 })
                 self.stop_price = None
                 return
