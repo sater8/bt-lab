@@ -12,8 +12,8 @@ def default_fees_cfg(commission: float | None = None):
           y también para buy&hold, para que sea consistente con el CLI.
     """
     if commission is None:
-        maker = 0.0002    # 0.02%
-        taker = 0.0004    # 0.04%
+        maker = 0.001    # 0.1%
+        taker = 0.001    # 0.1%
     else:
         maker = float(commission)
         taker = float(commission)

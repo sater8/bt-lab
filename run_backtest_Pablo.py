@@ -36,16 +36,12 @@ def import_strategy(strategy_path: str):
         module_rel, class_name = strategy_path, None
 
     module_path = os.path.join(BASE_DIR, module_rel.replace("/", os.sep))
-
-    # Nombre con el que registramos el módulo
     module_name = "user_strategy"
 
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     module = importlib.util.module_from_spec(spec)  # type: ignore
 
-    # 👈 REGISTRAMOS el módulo en sys.modules para que Backtrader lo encuentre
     sys.modules[module_name] = module
-
     spec.loader.exec_module(module)  # type: ignore
 
     if class_name is None:
@@ -60,14 +56,11 @@ def import_strategy(strategy_path: str):
 
 def get_strategy_label(strategy_path: str) -> str:
     """
-    Convierte cosas como:
-        'strategies/boll_breakout.py:Strategy'
-    en:
-        'boll_breakout'
+    'strategies/boll_breakout.py:Strategy' → 'boll_breakout'
     """
-    file_part = strategy_path.split(":")[0]              # 'strategies/boll_breakout.py'
-    base = os.path.basename(file_part)                   # 'boll_breakout.py'
-    strategy_label = os.path.splitext(base)[0]           # 'boll_breakout'
+    file_part = strategy_path.split(":")[0]
+    base = os.path.basename(file_part)
+    strategy_label = os.path.splitext(base)[0]
     return strategy_label
 
 
@@ -122,13 +115,14 @@ def run_backtest_for_symbol(
     print(f"🚀 {symbol} | estrategia {strategy_cls.__name__} | capital inicial: {args.capital:.2f}")
     print("=" * 70)
 
-    # Etiquetas para los nombres de archivo
-    mode_tag = args.sizing_mode            # all_in / fixed / percent
-    dca_tag = "DCA" if args.monthly_deposit > 0 else "noDCA"
-
     cerebro = bt.Cerebro()
-    cerebro.broker.setcash(args.capital)
-    # Comisión de Backtrader la dejamos en 0; las fees reales van por middleware
+
+    # Evitar problemas de capital exactamente 0 en Backtrader
+    user_start_capital = float(args.capital)
+    initial_broker_cash = user_start_capital if user_start_capital > 0 else 1e-8
+    cerebro.broker.setcash(initial_broker_cash)
+
+    # Comisión de Backtrader a 0; usamos nuestro propio sistema de fees
     cerebro.broker.setcommission(commission=0.0)
 
     # --- DATA ---
@@ -164,20 +158,19 @@ def run_backtest_for_symbol(
         cerebro,
         ex_rules=ex_rules,
         fees_cfg=fees_cfg,
-        # IMPORTANTE: aquí ya no usamos NINGÚN cap artificial de % portfolio
-        max_alloc_pct=1.0,  # lo dejamos pero realmente el cap interno ya no se usa
+        max_alloc_pct=1.0,
         slip_cfg=slip_cfg,
         lat_cfg=lat_cfg,
     )
 
-    # Analyzer de fees/trades (uno global por cerebro)
+    # Analyzer de fees/trades
     cerebro.addanalyzer(FeesNetAnalyzer, _name='fees_net', fees_cfg=fees_cfg)
 
-    # --- DCA mensual (opcional) ---
+    # DCA mensual (opcional)
     if args.monthly_deposit > 0:
         cerebro.addanalyzer(MonthlyDeposit, _name='monthly_dep', amount=args.monthly_deposit)
 
-    # --- Estrategia ---
+    # Estrategia
     cerebro.addstrategy(
         strategy_cls,
         sizing_mode=args.sizing_mode,
@@ -189,21 +182,33 @@ def run_backtest_for_symbol(
     results = cerebro.run()
     strat = results[0]
 
+    # Etiquetas para los nombres de archivo
+    mode_tag = args.sizing_mode            # all_in / fixed / percent
+    dca_tag = "DCA" if args.monthly_deposit > 0 else "noDCA"
+
     # --- Log de TRADES desde el analyzer FeesNetAnalyzer ---
     trades = []
+    analyzer = None
     try:
-        trades = strat.analyzers.fees_net.get_analysis()
+        analyzer = strat.analyzers.fees_net
+        trades = analyzer.get_analysis()
     except AttributeError:
+        analyzer = None
         trades = []
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # --- Si hay trades, guardamos CSV de trades ---
-    total_fee_in = 0.0
-    total_fee_out = 0.0
-    total_fees = 0.0
-    total_pnl_net = 0.0
+    # --- Totales de fees sacados directamente del analyzer (sirve aunque no haya ventas) ---
+    if analyzer is not None:
+        total_fee_in = float(getattr(analyzer, "total_fee_in", 0.0))
+        total_fee_out = float(getattr(analyzer, "total_fee_out", 0.0))
+    else:
+        total_fee_in = 0.0
+        total_fee_out = 0.0
+    total_fees = total_fee_in + total_fee_out
+    total_pnl_net = 0.0  # si quieres, se puede recomputar a partir de trades más adelante
 
+    # --- Si hay trades, guardamos CSV de trades ---
     if trades:
         os.makedirs("results", exist_ok=True)
         trades_path = os.path.join(
@@ -214,13 +219,15 @@ def run_backtest_for_symbol(
         df_trades.to_csv(trades_path, index=False, encoding="utf-8-sig")
         print(f"🧾 Log de TRADES guardado en: {os.path.abspath(trades_path)}")
 
-        # Calculamos totales de fees y PnL neto a partir del CSV
-        for row in trades:
-            total_fee_in += float(row.get("Fee entrada (€)", 0.0))
-            total_fee_out += float(row.get("Fee salida (€)", 0.0))
-            total_pnl_net += float(row.get("PnL neto (€)", 0.0))
+    # --- Totales de fees sacados DIRECTAMENTE del analyzer ---
+    if analyzer is not None:
+        total_fee_in = float(getattr(analyzer, "total_fee_in", 0.0))
+        total_fee_out = float(getattr(analyzer, "total_fee_out", 0.0))
+    else:
+        total_fee_in = 0.0
+        total_fee_out = 0.0
 
-        total_fees = total_fee_in + total_fee_out
+    total_fees = total_fee_in + total_fee_out
 
     # --- Valores del broker (BRUTOS, sin fees) ---
     final_value_gross = cerebro.broker.getvalue()
@@ -233,14 +240,14 @@ def run_backtest_for_symbol(
     else:
         total_deposited = 0.0
 
-    starting_capital = args.capital
+    starting_capital = user_start_capital
     total_invested = starting_capital + total_deposited
 
     # --- PnL BRUTO (sin considerar comisiones) ---
     pnl_abs_gross = final_value_gross - total_invested
     pnl_pct_gross = (pnl_abs_gross / total_invested) * 100 if total_invested > 0 else 0.0
 
-    # --- Ajuste NETO usando todas las fees acumuladas ---
+    # --- Ajuste NETO restando todas las comisiones ---
     final_value_net = final_value_gross - total_fees
     pnl_abs_net = final_value_net - total_invested
     pnl_pct_net = (pnl_abs_net / total_invested) * 100 if total_invested > 0 else 0.0
@@ -321,7 +328,6 @@ def main():
     strategy_label = get_strategy_label(args.strategy)
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
-    # Pedimos las reglas una sola vez para TODOS los símbolos
     ex_rules = ensure_exchange_rules(symbols)
 
     for symbol in symbols:

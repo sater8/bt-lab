@@ -229,6 +229,9 @@ class FeesNetAnalyzer(bt.Analyzer):
     """
     Analyzer global: usa precios EFECTIVOS con slippage (si existen en order.info)
     + fees de entrada/salida → PnL neto por trade.
+    Además acumula:
+      - total_fee_in  : suma de todas las fees de entrada
+      - total_fee_out : suma de todas las fees de salida
     """
 
     params = (('fees_cfg', None),)
@@ -236,6 +239,8 @@ class FeesNetAnalyzer(bt.Analyzer):
     def start(self):
         self.rows = []
         self._open = {}
+        self.total_fee_in = 0.0
+        self.total_fee_out = 0.0
 
     def notify_order(self, order):
         if order.status != order.Completed:
@@ -252,17 +257,13 @@ class FeesNetAnalyzer(bt.Analyzer):
         px_in_eff = float(getattr(order.info, '_px_eff_in', 0.0))
         px_out_eff = float(getattr(order.info, '_px_eff_out', 0.0))
 
-        fees_cfg = self.params.fees_cfg or {}
-
         if order.isbuy():
-            # Precio efectivo de entrada
             px = px_in_eff if px_in_eff > 0 else px_exec
             notional = px * size
+            fee_in = float(getattr(order.info, '_fee_in', 0.0))
 
-            # ⚠️ En vez de depender de order.info._fee_in,
-            # calculamos la fee de entrada directamente aquí.
-            from tools.fees import fee_amount
-            fee_in = fee_amount(notional, 'taker', fees_cfg)
+            # acumulamos fee de entrada global
+            self.total_fee_in += fee_in
 
             b = self._open.setdefault(
                 sym,
@@ -282,10 +283,12 @@ class FeesNetAnalyzer(bt.Analyzer):
 
         elif order.issell():
             from tools.fees import fee_amount
-            # Precio efectivo de salida
             px = px_out_eff if px_out_eff > 0 else px_exec
             notional = px * size
-            fee_out = fee_amount(notional, 'taker', fees_cfg)
+            fee_out = fee_amount(notional, 'taker', self.params.fees_cfg or {})
+
+            # acumulamos fee de salida global
+            self.total_fee_out += fee_out
 
             pos = self.strategy.getposition(data)
 
