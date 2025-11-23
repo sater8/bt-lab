@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 # src/tools/exec_middleware.py
-# Middleware global (todas las estrategias): reglas exchange + cap 15% + fees + slippage + latencias
+# Middleware global (todas las estrategias): reglas exchange + fees + slippage + latencias
+#
+# Versión Pablo:
+# - Ajusta qty a tick/step y minNotional (via exchange_rules).
+# - Aplica slippage determinista y latencia.
+# - Aplica fees tipo taker.
+# - Ajusta el tamaño si notional+fee excede el cash disponible (en vez de cancelar).
+# - NO impone ya el antiguo cap del 15% del portfolio.
+# - cap_notional interno de exchange_rules se desactiva (0.0).
 
 import backtrader as bt
 from tools.exchange_rules import bt_conform_market_order
@@ -9,18 +17,31 @@ from tools.slippage import default_slippage_cfg, default_latency_cfg, apply_slip
 
 
 def enable_exec_middleware(cerebro: bt.Cerebro, ex_rules, fees_cfg,
-                           max_alloc_pct=0.85,
+                           max_alloc_pct=1.0,
                            slip_cfg=None, lat_cfg=None):
     """
     Actívalo una vez en el runner. Aplica a TODAS las estrategias.
-    - Ajusta qty a tick/step y minNotional; respeta cap 15%.
-    - Aplica slippage determinista (spread + vol + tamaño + latencia).
-    - Calcula fee de entrada/salida (taker por defecto).
+
+    Parámetros:
+        cerebro      : instancia de bt.Cerebro.
+        ex_rules     : dict con reglas por símbolo (tickSize, stepSize, minNotional, etc.).
+        fees_cfg     : config de fees (p.ej. salida de default_fees_cfg()).
+        max_alloc_pct: (no se usa en esta versión, mantenido por compatibilidad).
+        slip_cfg     : config de slippage (si None, usa default_slippage_cfg()).
+        lat_cfg      : config de latencia (si None, usa default_latency_cfg()).
+
+    Efectos:
+        - Se parchean bt.Strategy.buy/sell/close para que:
+          * Ajusten size según exchange_rules.
+          * Apliquen slippage/latencia.
+          * Calculen fees de entrada/salida.
+          * No gasten más cash del disponible (escalando tamaño si hace falta).
     """
 
     slip_cfg = slip_cfg or default_slippage_cfg()
     lat_cfg = lat_cfg or default_latency_cfg()
 
+    # Guardamos los métodos originales
     orig_buy = bt.Strategy.buy
     orig_sell = bt.Strategy.sell
     orig_close = bt.Strategy.close
@@ -31,42 +52,90 @@ def enable_exec_middleware(cerebro: bt.Cerebro, ex_rules, fees_cfg,
     # ---------- BUY wrapper (MARKET) ----------
     def buy_wrapper(self: bt.Strategy, *args, **kwargs):
         data = kwargs.get('data', self.datas[0])
-        size = kwargs.get('size', args[0] if args else 0.0)
-        if not size:
+
+        # backtrader permite pasar size como primer arg posicional o como kwarg
+        if 'size' in kwargs:
+            size = kwargs['size']
+        elif args:
+            size = args[0]
+        else:
+            size = 0.0
+
+        size = float(size)
+        if not size or size <= 0.0:
             return None
 
         px_ref = float(data.close[0])
+        if px_ref <= 0:
+            return None
+
         sym = _symbol(self, data)
         rules = (ex_rules or {}).get(sym, {})
-        cap_new = float(self.broker.getvalue()) * float(max_alloc_pct)
 
-        # 1) Reglas del exchange + cap
+        # cap_notional = 0 → NO aplicamos cap interno en exchange_rules
+        cap_new = 0.0
+
+        # 1) Ajuste inicial por reglas del exchange (tick/step/minNotional)
         ok, qty_adj, notional_adj, reason = bt_conform_market_order(
             rules=rules,
             side="buy",
             ref_price=px_ref,
-            qty=float(size),
+            qty=size,
             cap_notional=cap_new
         )
-        if not ok or qty_adj <= 0:
+
+        if (not ok) or qty_adj <= 0:
             print(f"[EXEC-MW][SKIP] {sym} {self.datetime.datetime(0)} motivo={reason} cap={cap_new:.2f}")
             return None
 
-        # 2) Slippage (precio efectivo de compra)
+        cash = float(self.broker.get_cash())
+
+        # 2) Slippage inicial y cálculo de coste
         px_eff = apply_slippage("buy", px_ref, qty_adj, data, lat_cfg, slip_cfg)
         notional_eff = px_eff * qty_adj
-
-        # 3) Fee de entrada y chequeo de cash/cap
         fee_in = fee_amount(notional_eff, 'taker', fees_cfg or {})
-        cash = float(self.broker.get_cash())
-        if notional_eff + fee_in > cash + 1e-6:
-            print(f"[EXEC-MW][SKIP] {sym} cash insuficiente (notional+fee>{cash:.2f})")
-            return None
-        if notional_eff > cap_new + 1e-6:
-            print(f"[EXEC-MW][SKIP] {sym} excede cap tras slippage ({notional_eff:.2f}>{cap_new:.2f})")
-            return None
+        total_cost = notional_eff + fee_in
 
-        # 4) Pasar size ajustado
+        # 3) Si el coste total excede el cash, ESCALAMOS el size en vez de cancelar
+        if total_cost > cash + 1e-6:
+            if total_cost <= 0:
+                print(f"[EXEC-MW][SKIP] {sym} {self.datetime.datetime(0)} motivo=total_cost<=0")
+                return None
+
+            scale = cash / total_cost
+            if scale <= 0:
+                print(f"[EXEC-MW][SKIP] {sym} {self.datetime.datetime(0)} motivo=scale<=0")
+                return None
+
+            qty_scaled = qty_adj * scale
+
+            # Volvemos a aplicar exchange_rules por si al escalar rompemos minNotional/step
+            ok2, qty_adj2, notional_adj2, reason2 = bt_conform_market_order(
+                rules=rules,
+                side="buy",
+                ref_price=px_ref,
+                qty=qty_scaled,
+                cap_notional=0.0
+            )
+            if (not ok2) or qty_adj2 <= 0:
+                print(f"[EXEC-MW][SKIP] {sym} {self.datetime.datetime(0)} motivo={reason2} tras escalar")
+                return None
+
+            qty_adj = qty_adj2
+            px_eff = apply_slippage("buy", px_ref, qty_adj, data, lat_cfg, slip_cfg)
+            notional_eff = px_eff * qty_adj
+            fee_in = fee_amount(notional_eff, 'taker', fees_cfg or {})
+            total_cost = notional_eff + fee_in
+
+            if total_cost > cash + 1e-6:
+                # Si aún así, por redondeos, sigue pasando, ya sí la descartamos
+                print(
+                    f"[EXEC-MW][SKIP] {sym} {self.datetime.datetime(0)} "
+                    f"motivo=cash_insuficiente_tras_escalar (total_cost>{cash:.2f})"
+                )
+                return None
+
+        # 4) Pasar size ajustado al método original
         kwargs['size'] = qty_adj
         order = orig_buy(self, *args, **kwargs)
 
@@ -87,9 +156,18 @@ def enable_exec_middleware(cerebro: bt.Cerebro, ex_rules, fees_cfg,
     # ---------- SELL wrapper (MARKET) ----------
     def sell_wrapper(self: bt.Strategy, *args, **kwargs):
         data = kwargs.get('data', self.datas[0])
-        size = kwargs.get('size', args[0] if args else 0.0)
 
-        # Si la estrategia no pasa size, cerramos la pos actual
+        # backtrader permite pasar size como primer arg posicional o como kwarg
+        if 'size' in kwargs:
+            size = kwargs['size']
+        elif args:
+            size = args[0]
+        else:
+            size = 0.0
+
+        size = float(size)
+
+        # Si la estrategia no pasa size o pasa size <= 0, cerramos la posición actual
         if not size or size <= 0.0:
             pos = self.getposition(data)
             size = abs(float(pos.size))
@@ -98,11 +176,14 @@ def enable_exec_middleware(cerebro: bt.Cerebro, ex_rules, fees_cfg,
             kwargs['size'] = size
 
         px_ref = float(data.close[0])
+        if px_ref <= 0:
+            return None
+
         sym = _symbol(self, data)
 
         # Precio efectivo de venta con slippage
-        px_eff = apply_slippage("sell", px_ref, float(size), data, lat_cfg, slip_cfg)
-        notional_eff = px_eff * float(size)
+        px_eff = apply_slippage("sell", px_ref, size, data, lat_cfg, slip_cfg)
+        notional_eff = px_eff * size
 
         order = orig_sell(self, *args, **kwargs)
 
@@ -126,6 +207,7 @@ def enable_exec_middleware(cerebro: bt.Cerebro, ex_rules, fees_cfg,
         if size <= 0.0:
             return None
 
+        # Reutilizamos sell_wrapper para que aplique slippage + fees de salida
         return sell_wrapper(
             self,
             size=size,
@@ -170,10 +252,17 @@ class FeesNetAnalyzer(bt.Analyzer):
         px_in_eff = float(getattr(order.info, '_px_eff_in', 0.0))
         px_out_eff = float(getattr(order.info, '_px_eff_out', 0.0))
 
+        fees_cfg = self.params.fees_cfg or {}
+
         if order.isbuy():
+            # Precio efectivo de entrada
             px = px_in_eff if px_in_eff > 0 else px_exec
             notional = px * size
-            fee_in = float(getattr(order.info, '_fee_in', 0.0))
+
+            # ⚠️ En vez de depender de order.info._fee_in,
+            # calculamos la fee de entrada directamente aquí.
+            from tools.fees import fee_amount
+            fee_in = fee_amount(notional, 'taker', fees_cfg)
 
             b = self._open.setdefault(
                 sym,
@@ -193,9 +282,10 @@ class FeesNetAnalyzer(bt.Analyzer):
 
         elif order.issell():
             from tools.fees import fee_amount
+            # Precio efectivo de salida
             px = px_out_eff if px_out_eff > 0 else px_exec
             notional = px * size
-            fee_out = fee_amount(notional, 'taker', self.params.fees_cfg or {})
+            fee_out = fee_amount(notional, 'taker', fees_cfg)
 
             pos = self.strategy.getposition(data)
 
